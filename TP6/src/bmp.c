@@ -1,108 +1,137 @@
-/*
- * SPDX-FileCopyrightText: 2021 John Samuel
- *
- * SPDX-License-Identifier: GPL-3.0-or-later
- *
- */
-
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <stdio.h>
-#include <stdlib.h>
-
+#define _POSIX_C_SOURCE 200809L
 #include "bmp.h"
 
-/*
- * fonction d'analyse des couleurs dans l'image du format BMP
- * Il faut un argument : le chemin du fichier image
- */
-couleur_compteur *analyse_bmp_image(char *nom_de_fichier)
-{
+#include <errno.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-  couleur_compteur *cc = NULL;
-
-  // l'ouverture du fichier pour la lecture
-  int fd = open(nom_de_fichier, O_RDONLY);
-  printf("%s", nom_de_fichier);
-  if (fd < 0)
-  {
-    perror("Erreur: open");
-    return 0;
+couleur_compteur *analyse_bmp_image(const char *nom_de_fichier) {
+  if (nom_de_fichier == NULL) {
+    fprintf(stderr, "Nom de fichier BMP manquant.\n");
+    return NULL;
+  }
+  FILE *fichier = fopen(nom_de_fichier, "rb");
+  if (fichier == NULL) {
+    perror(nom_de_fichier);
+    return NULL;
   }
 
-  bmp_header bheader;
-  bmp_info_header binfo_header;
-
-  // la lecture de l'en-tête du fichier pour en connaître la taille et le type
-  ssize_t compte = read(fd, &bheader, sizeof(bheader));
-  if (compte < 0)
-  {
-    perror("Erreur: read");
-    return (NULL);
+  bmp_header entete;
+  bmp_info_header information;
+  couleur_compteur *compteurs = NULL;
+  if (fread(&entete, sizeof entete, 1, fichier) != 1 ||
+      fread(&information, sizeof information, 1, fichier) != 1) {
+    fprintf(stderr, "%s : en-tête BMP incomplet.\n", nom_de_fichier);
+    goto fin;
+  }
+  if (entete.type != 0x4d42 || information.info_header_size < 40 ||
+      information.planes != 1 || information.compression != 0 ||
+      (information.compte_bit != 24 && information.compte_bit != 32)) {
+    fprintf(stderr, "%s : BMP non compressé 24/32 bits requis.\n",
+            nom_de_fichier);
+    goto fin;
   }
 
-  // Vérifier l'en-tête pour voir si le fichier est une image de format BMP
-  if (bheader.type != 0x4D42)
-  {
-    return (NULL);
+  int32_t hauteur_signee;
+  memcpy(&hauteur_signee, &information.hauteur, sizeof hauteur_signee);
+  int64_t hauteur_large = hauteur_signee < 0
+                              ? -(int64_t)hauteur_signee
+                              : hauteur_signee;
+  if (information.largeur == 0 || hauteur_large == 0 ||
+      information.largeur > INT_MAX || hauteur_large > INT_MAX ||
+      (uint64_t)information.largeur * (uint64_t)hauteur_large > INT_MAX) {
+    fprintf(stderr, "%s : dimensions BMP invalides ou trop grandes.\n",
+            nom_de_fichier);
+    goto fin;
   }
 
-  /* Obtenir l'information indiquant si l'image utilise 3 (RGB) ou 4 (RGBA)
-   * octets pour stocker une seule couleur
-   */
-  compte = read(fd, &binfo_header, sizeof(binfo_header));
-  if (compte < 0)
-  {
-    perror("Erreur: read");
-    return (NULL);
+  size_t largeur = information.largeur;
+  size_t hauteur = (size_t)hauteur_large;
+  size_t octets_pixel = information.compte_bit / 8;
+  if (largeur > (SIZE_MAX - 3) / octets_pixel) {
+    fprintf(stderr, "%s : ligne BMP trop large.\n", nom_de_fichier);
+    goto fin;
+  }
+  size_t octets_ligne = ((largeur * octets_pixel + 3) / 4) * 4;
+  if (octets_ligne > SIZE_MAX / hauteur) {
+    fprintf(stderr, "%s : image BMP trop grande.\n", nom_de_fichier);
+    goto fin;
+  }
+  size_t taille_pixels = octets_ligne * hauteur;
+  if (fseek(fichier, 0, SEEK_END) != 0) {
+    perror("Lecture de la taille BMP");
+    goto fin;
+  }
+  long taille_fichier = ftell(fichier);
+  if (taille_fichier < 0 ||
+      (uint64_t)entete.offset > (uint64_t)taille_fichier ||
+      taille_pixels > (size_t)taille_fichier - (size_t)entete.offset) {
+    fprintf(stderr, "%s : données de pixels BMP incomplètes.\n",
+            nom_de_fichier);
+    goto fin;
+  }
+  if (entete.offset < sizeof entete + information.info_header_size ||
+      fseek(fichier, (long)entete.offset, SEEK_SET) != 0) {
+    fprintf(stderr, "%s : décalage de pixels BMP invalide.\n",
+            nom_de_fichier);
+    goto fin;
   }
 
-  // Se positionner correctement pour commencer à lire les couleurs
-  off_t offset = lseek(fd, bheader.offset, SEEK_SET);
-  if (offset != bheader.offset)
-  {
-    perror("Erreur: lseek");
-    return (NULL);
+  couleur pixels;
+  pixels.compte_bit = information.compte_bit == 24 ? BITS24 : BITS32;
+  pixels.size = (int)(largeur * hauteur);
+  pixels.c.c24 = NULL;
+  if (pixels.compte_bit == BITS24) {
+    pixels.c.c24 = malloc((size_t)pixels.size * sizeof *pixels.c.c24);
+  } else {
+    pixels.c.c32 = malloc((size_t)pixels.size * sizeof *pixels.c.c32);
+  }
+  void *stockage = pixels.compte_bit == BITS24
+                       ? (void *)pixels.c.c24 : (void *)pixels.c.c32;
+  unsigned char *ligne = malloc(octets_ligne);
+  if (stockage == NULL || ligne == NULL) {
+    perror("Allocation de l'image BMP");
+    free(stockage);
+    free(ligne);
+    goto fin;
   }
 
-  // Lecture des couleurs de 4 octets
-  if (binfo_header.compte_bit == 32)
-  {
-    couleur32 *c32 = calloc(binfo_header.taille_image / 4, 4);
-    read(fd, c32, binfo_header.taille_image);
-    if (compte < 0)
-    {
-      perror("Erreur: read");
-      return (NULL);
+  int valide = 1;
+  for (size_t y = 0; y < hauteur && valide; ++y) {
+    if (fread(ligne, 1, octets_ligne, fichier) != octets_ligne) {
+      fprintf(stderr, "%s : données de pixels BMP incomplètes.\n",
+              nom_de_fichier);
+      valide = 0;
+      break;
     }
-
-    couleur c;
-    c.compte_bit = BITS32;
-    c.c.c32 = c32;
-    cc = compte_couleur(&c, binfo_header.taille_image / 4);
-    trier_couleur_compteur(cc);
-  }
-  else if (binfo_header.compte_bit == 24)
-  {
-    // Lecture des couleurs de 3 octets
-    couleur24 *c24 = calloc(binfo_header.taille_image / 3, 3);
-    read(fd, c24, binfo_header.taille_image);
-    if (compte < 0)
-    {
-      perror("Erreur: read");
-      return (NULL);
+    size_t y_source = hauteur_signee < 0 ? y : hauteur - 1 - y;
+    for (size_t x = 0; x < largeur; ++x) {
+      size_t indice = y_source * largeur + x;
+      const unsigned char *pixel = ligne + x * octets_pixel;
+      if (pixels.compte_bit == BITS24) {
+        pixels.c.c24[indice] = (couleur24){pixel[2], pixel[1], pixel[0]};
+      } else {
+        pixels.c.c32[indice] =
+            (couleur32){pixel[2], pixel[1], pixel[0], pixel[3]};
+      }
     }
-
-    couleur c;
-    c.compte_bit = BITS24;
-    c.c.c24 = c24;
-    cc = compte_couleur(&c, binfo_header.taille_image / 3);
-    trier_couleur_compteur(cc);
   }
+  free(ligne);
+  if (valide) {
+    compteurs = compte_couleur(&pixels, pixels.size);
+    if (compteurs != NULL) {
+      trier_couleur_compteur(compteurs);
+    }
+  }
+  free(stockage);
 
-  close(fd);
-
-  return cc;
+fin:
+  if (fclose(fichier) != 0) {
+    perror(nom_de_fichier);
+    libere_couleur_compteur(compteurs);
+    return NULL;
+  }
+  return compteurs;
 }

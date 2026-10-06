@@ -78,6 +78,7 @@ typedef struct
 
 // compter les couleurs distincts
 couleur_compteur *compte_couleur(couleur *, int);
+void libere_couleur_compteur(couleur_compteur *);
 
 // afficher les couleurs
 void print_couleur(couleur *, int);

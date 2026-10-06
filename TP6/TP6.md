@@ -131,3 +131,13 @@ Autres exemples :
 bmp.c, bmp.h, client.c, client.h, couleur.c, couleur.h, Makefile,
 serveur.c, serveur.h
 
+## Utilisation du client
+
+Depuis `TP6/src`, lancez le serveur avec `./serveur`, puis le client dans un
+second terminal avec `./client chemin/vers/image.bmp [nombre_de_couleurs]`.
+Le nombre de couleurs est compris entre 1 et 30; s'il est omis, le client le
+demande à l'utilisateur. Le serveur écrit le graphique dans `pie_chart.svg`
+et tente de l'ouvrir avec Firefox lorsque l'environnement graphique est
+disponible. Les requêtes et réponses utilisent des objets JSON avec les champs
+`code`, `nombre` (pour les couleurs) et `valeurs`. Aucune bibliothèque JSON
+externe n'est nécessaire.

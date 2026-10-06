@@ -2,8 +2,10 @@ CC ?= gcc
 
 CFLAGS=-Wall -Wextra -g
 
-COBJS ?= client.o
-SOBJS ?= serveur.o 
+CC ?= gcc
+CFLAGS ?= -Wall -Wextra -Wpedantic -g
+COBJS = client.o
+SOBJS = serveur.o
 
 .SUFFIXES: .c .o
 
@@ -13,11 +15,15 @@ CLIENT = client
 all: $(SERVER) $(CLIENT)
 
 $(SERVER): $(SOBJS)
-	$(CC) -o $(SERVER) $(SOBJS)
+	$(CC) $(CFLAGS) -o $(SERVER) $(SOBJS)
 
 $(CLIENT): $(COBJS)
-	$(CC) -o $(CLIENT) $(COBJS)
+	$(CC) $(CFLAGS) -o $(CLIENT) $(COBJS)
 
-.c.o: 
-	$(CC) -c $*.c
+.c.o:
+	$(CC) $(CFLAGS) -c $< -o $@
 
+clean:
+	rm -f $(SERVER) $(CLIENT) $(COBJS) $(SOBJS)
+
+.PHONY: all clean
